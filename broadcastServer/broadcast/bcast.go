@@ -21,10 +21,15 @@ const (
 type channel struct {
 	kind   event
 	msg    string
-	client *websocket.Conn
+	client Client
 }
 
-var connectedClients = make(map[*websocket.Conn]bool)
+type Client struct {
+	conn *websocket.Conn
+	send chan []byte
+}
+
+var connectedClients = make(map[Client]bool)
 
 var broker = make(chan channel)
 
@@ -34,12 +39,25 @@ var upgrader = websocket.Upgrader{
 }
 
 func Init() {
-	go safeBroadcast()
+	go safeHub()
 	http.HandleFunc("/listen", handle)
 	log.Fatal(http.ListenAndServe(":7070", nil))
 }
 
-func safeBroadcast() {
+func sendMessage(client Client) {
+	for msg := range client.send {
+		err := client.conn.WriteMessage(1, msg)
+		if err != nil {
+			broker <- channel{
+				kind:   Leave,
+				client: client,
+			}
+			return
+		}
+	}
+}
+
+func safeHub() {
 	// this is the owner of map and keeps listening for messages on the channel
 	for {
 		packet := <-broker
@@ -48,21 +66,16 @@ func safeBroadcast() {
 		case Join:
 			connectedClients[packet.client] = true
 		case Leave:
-			fmt.Println("closing connection for " + packet.client.RemoteAddr().String()[6:])
+			fmt.Println("closing connection for " + packet.client.conn.RemoteAddr().String()[6:])
 			delete(connectedClients, packet.client)
-			packet.client.Close()
+			packet.client.conn.Close()
 		case Message:
 			for client := range connectedClients {
 				if packet.client != client {
-					err := client.WriteMessage(1, []byte(packet.msg))
-					if err != nil {
-						delete(connectedClients, client)
-						packet.client.Close()
-					}
+					client.send <- []byte(packet.msg)
 				}
 			}
 		}
-
 	}
 }
 
@@ -75,12 +88,15 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println(conn.RemoteAddr())
 	id := conn.RemoteAddr().String()[6:]
+	client := Client{conn, make(chan []byte)}
 
 	// add the client to the connectedClients map
 	broker <- channel{
 		kind:   Join,
-		client: conn,
+		client: client,
 	}
+
+	go sendMessage(client)
 
 	// keeps listening for messages from the connected client
 	for {
@@ -93,7 +109,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(string(msg)) == "X" {
 			broker <- channel{
 				kind:   Leave,
-				client: conn,
+				client: client,
 			}
 			break
 		}
@@ -104,7 +120,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		broker <- channel{
 			kind:   Message,
 			msg:    string(send),
-			client: conn,
+			client: client,
 		}
 	}
 }
