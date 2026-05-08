@@ -24,11 +24,6 @@ type channel struct {
 	client Client
 }
 
-type Send struct {
-	relay chan []byte
-	quit  bool
-}
-
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
@@ -47,6 +42,35 @@ func Init() {
 	go safeHub()
 	http.HandleFunc("/listen", handle)
 	log.Fatal(http.ListenAndServe(":7070", nil))
+}
+
+func receiveMessage(conn *websocket.Conn, client Client) {
+	id := conn.RemoteAddr().String()[6:]
+	// keeps listening for messages from the connected client
+	for {
+		_, msg, err := conn.ReadMessage()
+
+		if err != nil {
+			break
+		}
+
+		if strings.TrimSpace(string(msg)) == "X" {
+			broker <- channel{
+				kind:   Leave,
+				client: client,
+			}
+			break
+		}
+
+		send := []byte("\n" + id + ":  ")
+		send = append(send, msg...)
+
+		broker <- channel{
+			kind:   Message,
+			msg:    send,
+			client: client,
+		}
+	}
 }
 
 func sendMessage(client Client) {
@@ -103,7 +127,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Println(conn.RemoteAddr())
-	id := conn.RemoteAddr().String()[6:]
+
 	client := Client{conn, make(chan []byte, 32)}
 
 	// add the client to the connectedClients map
@@ -112,31 +136,6 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		client: client,
 	}
 
+	go receiveMessage(conn, client)
 	go sendMessage(client)
-
-	// keeps listening for messages from the connected client
-	for {
-		_, msg, err := conn.ReadMessage()
-
-		if err != nil {
-			break
-		}
-
-		if strings.TrimSpace(string(msg)) == "X" {
-			broker <- channel{
-				kind:   Leave,
-				client: client,
-			}
-			break
-		}
-
-		send := []byte("\n" + id + ":  ")
-		send = append(send, msg...)
-
-		broker <- channel{
-			kind:   Message,
-			msg:    send,
-			client: client,
-		}
-	}
 }
