@@ -8,13 +8,9 @@ import (
 
 func main() {
 	fmt.Println("Broadcast server")
-	// bchan := make(chan bool)
 
 	bcasthandler.Init()
-	// for range 3 {
-	// 	bcasthandler.Connect()
-	// }
-	// <-bchan
+
 }
 
 /* possibly the thing to use here is r.Context()*/

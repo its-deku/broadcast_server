@@ -20,8 +20,13 @@ const (
 
 type channel struct {
 	kind   event
-	msg    string
+	msg    []byte
 	client Client
+}
+
+type Send struct {
+	relay chan []byte
+	quit  bool
 }
 
 type Client struct {
@@ -47,6 +52,7 @@ func Init() {
 func sendMessage(client Client) {
 	for msg := range client.send {
 		err := client.conn.WriteMessage(1, msg)
+
 		if err != nil {
 			broker <- channel{
 				kind:   Leave,
@@ -55,6 +61,13 @@ func sendMessage(client Client) {
 			return
 		}
 	}
+}
+
+func dropClient(client Client) {
+	fmt.Println("closing connection for " + client.conn.RemoteAddr().String()[6:])
+	delete(connectedClients, client)
+	close(client.send)
+	client.conn.Close()
 }
 
 func safeHub() {
@@ -66,13 +79,16 @@ func safeHub() {
 		case Join:
 			connectedClients[packet.client] = true
 		case Leave:
-			fmt.Println("closing connection for " + packet.client.conn.RemoteAddr().String()[6:])
-			delete(connectedClients, packet.client)
-			packet.client.conn.Close()
+			dropClient(packet.client)
 		case Message:
 			for client := range connectedClients {
 				if packet.client != client {
-					client.send <- []byte(packet.msg)
+					select {
+					case client.send <- packet.msg:
+						continue
+					default:
+						dropClient(client)
+					}
 				}
 			}
 		}
@@ -80,15 +96,15 @@ func safeHub() {
 }
 
 func handle(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil) // upgrades the http connection to a websocket
 
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 
 	fmt.Println(conn.RemoteAddr())
 	id := conn.RemoteAddr().String()[6:]
-	client := Client{conn, make(chan []byte)}
+	client := Client{conn, make(chan []byte, 32)}
 
 	// add the client to the connectedClients map
 	broker <- channel{
@@ -119,7 +135,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 		broker <- channel{
 			kind:   Message,
-			msg:    string(send),
+			msg:    send,
 			client: client,
 		}
 	}
