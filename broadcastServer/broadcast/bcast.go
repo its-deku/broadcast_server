@@ -1,10 +1,12 @@
 package broadcast
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -25,8 +27,9 @@ type channel struct {
 }
 
 type Client struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn       *websocket.Conn
+	send       chan []byte
+	lastActive time.Time
 }
 
 var connectedClients = make(map[Client]bool)
@@ -62,8 +65,14 @@ func receiveMessage(conn *websocket.Conn, client Client) {
 			break
 		}
 
-		send := []byte("\n" + id + ":  ")
-		send = append(send, msg...)
+		client.lastActive = time.Now()
+
+		if bytes.Equal(msg, []byte("pong")) {
+			fmt.Println("pong received from " + id)
+			continue
+		}
+
+		send := append([]byte("\n"+id+":  "), msg...)
 
 		broker <- channel{
 			kind:   Message,
@@ -75,14 +84,34 @@ func receiveMessage(conn *websocket.Conn, client Client) {
 
 func sendMessage(client Client) {
 	for msg := range client.send {
-		err := client.conn.WriteMessage(1, msg)
 
+		err := client.conn.WriteMessage(1, msg)
 		if err != nil {
 			broker <- channel{
 				kind:   Leave,
 				client: client,
 			}
 			return
+		}
+		client.lastActive = time.Now()
+	}
+}
+
+func heartBeat(client Client) {
+	for {
+		// sends a ping to connected client every 30 sec
+		broker <- channel{
+			kind:   Message,
+			client: client,
+			msg:    []byte("ping"),
+		}
+		client.lastActive = time.Now()
+		time.Sleep(30 * time.Second)
+		if time.Since(client.lastActive) > time.Duration(35*time.Second) {
+			broker <- channel{
+				kind:   Leave,
+				client: client,
+			}
 		}
 	}
 }
@@ -128,7 +157,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println(conn.RemoteAddr())
 
-	client := Client{conn, make(chan []byte, 32)}
+	client := Client{conn, make(chan []byte, 32), time.Now()}
 
 	// add the client to the connectedClients map
 	broker <- channel{
@@ -136,6 +165,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		client: client,
 	}
 
+	go heartBeat(client)
 	go receiveMessage(conn, client)
 	go sendMessage(client)
 }
