@@ -32,7 +32,7 @@ type Client struct {
 	lastActive time.Time
 }
 
-var connectedClients = make(map[Client]bool)
+var connectedClients = make(map[*Client]bool)
 
 var broker = make(chan channel)
 
@@ -47,7 +47,14 @@ func Init() {
 	log.Fatal(http.ListenAndServe(":7070", nil))
 }
 
-func receiveMessage(conn *websocket.Conn, client Client) {
+func (client *Client) equals(nclient *Client) bool {
+	if client.conn == nclient.conn && client.send == nclient.send {
+		return true
+	}
+	return false
+}
+
+func receiveMessageFromClient(conn *websocket.Conn, client *Client) {
 	id := conn.RemoteAddr().String()[6:]
 	// keeps listening for messages from the connected client
 	for {
@@ -60,7 +67,7 @@ func receiveMessage(conn *websocket.Conn, client Client) {
 		if strings.TrimSpace(string(msg)) == "X" {
 			broker <- channel{
 				kind:   Leave,
-				client: client,
+				client: *client,
 			}
 			break
 		}
@@ -77,19 +84,18 @@ func receiveMessage(conn *websocket.Conn, client Client) {
 		broker <- channel{
 			kind:   Message,
 			msg:    send,
-			client: client,
+			client: *client,
 		}
 	}
 }
 
-func sendMessage(client Client) {
+func sendMessageToClient(client *Client) {
 	for msg := range client.send {
-
 		err := client.conn.WriteMessage(1, msg)
 		if err != nil {
 			broker <- channel{
 				kind:   Leave,
-				client: client,
+				client: *client,
 			}
 			return
 		}
@@ -97,12 +103,12 @@ func sendMessage(client Client) {
 	}
 }
 
-func heartBeat(client Client) {
+func heartBeat(client *Client) {
 	for {
 		// sends a ping to connected client every 30 sec
 		broker <- channel{
 			kind:   Message,
-			client: client,
+			client: *client,
 			msg:    []byte("ping"),
 		}
 		client.lastActive = time.Now()
@@ -110,13 +116,13 @@ func heartBeat(client Client) {
 		if time.Since(client.lastActive) > time.Duration(35*time.Second) {
 			broker <- channel{
 				kind:   Leave,
-				client: client,
+				client: *client,
 			}
 		}
 	}
 }
 
-func dropClient(client Client) {
+func dropClient(client *Client) {
 	fmt.Println("closing connection for " + client.conn.RemoteAddr().String()[6:])
 	delete(connectedClients, client)
 	close(client.send)
@@ -130,12 +136,12 @@ func safeHub() {
 
 		switch packet.kind {
 		case Join:
-			connectedClients[packet.client] = true
+			connectedClients[&(packet.client)] = true
 		case Leave:
-			dropClient(packet.client)
+			dropClient(&(packet.client))
 		case Message:
 			for client := range connectedClients {
-				if packet.client != client {
+				if !packet.client.equals(client) {
 					select {
 					case client.send <- packet.msg:
 						continue
@@ -157,15 +163,15 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println(conn.RemoteAddr())
 
-	client := Client{conn, make(chan []byte, 32), time.Now()}
+	client := &Client{conn, make(chan []byte, 32), time.Now()}
 
 	// add the client to the connectedClients map
 	broker <- channel{
 		kind:   Join,
-		client: client,
+		client: *client,
 	}
 
 	go heartBeat(client)
-	go receiveMessage(conn, client)
-	go sendMessage(client)
+	go receiveMessageFromClient(conn, client)
+	go sendMessageToClient(client)
 }

@@ -19,6 +19,7 @@ func receive(c *websocket.Conn) {
 
 		if err != nil {
 			log.Println(err)
+			os.Exit(0)
 		}
 
 		replyc := strings.ToLower(strings.Trim(string(reply), " "))
