@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,16 +25,20 @@ const (
 type channel struct {
 	kind   event
 	msg    []byte
-	client Client
+	client *Client
 }
 
 type Client struct {
 	conn       *websocket.Conn
 	send       chan []byte
+	room       string
 	lastActive time.Time
 }
 
 var connectedClients = make(map[*Client]bool)
+var rooms = make(map[string]map[*Client]bool)
+var mod = 1
+var opts = []string{"books", "OTT", "games", "party", "project"}
 
 var broker = make(chan channel)
 
@@ -42,13 +48,21 @@ var upgrader = websocket.Upgrader{
 }
 
 func Init() {
+	makeRooms()
 	go safeHub()
 	http.HandleFunc("/listen", handle)
 	log.Fatal(http.ListenAndServe(":7070", nil))
 }
 
+func makeRooms() {
+	for _, opt := range opts {
+		rooms[opt] = make(map[*Client]bool)
+	}
+	mod = len(opts)
+}
+
 func (client *Client) equals(nclient *Client) bool {
-	if client.conn == nclient.conn && client.send == nclient.send {
+	if client.conn == nclient.conn && client.send == nclient.send && client.room == nclient.room {
 		return true
 	}
 	return false
@@ -67,7 +81,7 @@ func receiveMessageFromClient(conn *websocket.Conn, client *Client) {
 		if strings.TrimSpace(string(msg)) == "X" {
 			broker <- channel{
 				kind:   Leave,
-				client: *client,
+				client: client,
 			}
 			break
 		}
@@ -75,7 +89,7 @@ func receiveMessageFromClient(conn *websocket.Conn, client *Client) {
 		client.lastActive = time.Now()
 
 		if bytes.Equal(msg, []byte("pong")) {
-			fmt.Println("pong received from " + id)
+			// fmt.Println("pong received from " + id)
 			continue
 		}
 
@@ -84,7 +98,7 @@ func receiveMessageFromClient(conn *websocket.Conn, client *Client) {
 		broker <- channel{
 			kind:   Message,
 			msg:    send,
-			client: *client,
+			client: client,
 		}
 	}
 }
@@ -95,7 +109,7 @@ func sendMessageToClient(client *Client) {
 		if err != nil {
 			broker <- channel{
 				kind:   Leave,
-				client: *client,
+				client: client,
 			}
 			return
 		}
@@ -108,7 +122,7 @@ func heartBeat(client *Client) {
 		// sends a ping to connected client every 30 sec
 		broker <- channel{
 			kind:   Message,
-			client: *client,
+			client: client,
 			msg:    []byte("ping"),
 		}
 		client.lastActive = time.Now()
@@ -116,7 +130,7 @@ func heartBeat(client *Client) {
 		if time.Since(client.lastActive) > time.Duration(35*time.Second) {
 			broker <- channel{
 				kind:   Leave,
-				client: *client,
+				client: client,
 			}
 		}
 	}
@@ -136,12 +150,16 @@ func safeHub() {
 
 		switch packet.kind {
 		case Join:
-			connectedClients[&(packet.client)] = true
+			roomNo := rand.Intn(100) % 2
+			rooms[opts[roomNo]][(packet.client)] = true
+			packet.client.room = opts[roomNo]
+			fmt.Println("client: " + packet.client.conn.RemoteAddr().String()[6:] + " added to room " + strconv.Itoa(roomNo))
+			connectedClients[(packet.client)] = true
 		case Leave:
-			dropClient(&(packet.client))
+			dropClient((packet.client))
 		case Message:
-			for client := range connectedClients {
-				if !packet.client.equals(client) {
+			for client := range rooms[packet.client.room] {
+				if !packet.client.equals(client) && client.room == packet.client.room {
 					select {
 					case client.send <- packet.msg:
 						continue
@@ -151,6 +169,7 @@ func safeHub() {
 				}
 			}
 		}
+
 	}
 }
 
@@ -161,14 +180,12 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 	}
 
-	fmt.Println(conn.RemoteAddr())
-
-	client := &Client{conn, make(chan []byte, 32), time.Now()}
+	client := &Client{conn, make(chan []byte, 32), "-", time.Now()}
 
 	// add the client to the connectedClients map
 	broker <- channel{
 		kind:   Join,
-		client: *client,
+		client: client,
 	}
 
 	go heartBeat(client)
