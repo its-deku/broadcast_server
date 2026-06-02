@@ -44,7 +44,6 @@ func hub(c *websocket.Conn) {
 func send(c *websocket.Conn) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("send a message here: ")
 		line, err := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 

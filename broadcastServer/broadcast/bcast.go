@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -136,9 +135,10 @@ func heartBeat(client *Client) {
 	}
 }
 
-func dropClient(client *Client) {
+func dropClient(client *Client, room string) {
 	fmt.Println("closing connection for " + client.conn.RemoteAddr().String()[6:])
 	delete(connectedClients, client)
+	delete(rooms[room], client)
 	close(client.send)
 	client.conn.Close()
 }
@@ -150,21 +150,22 @@ func safeHub() {
 
 		switch packet.kind {
 		case Join:
-			roomNo := rand.Intn(100) % 2
+			// roomNo := rand.Intn(100) % 2
+			roomNo := 3
 			rooms[opts[roomNo]][(packet.client)] = true
 			packet.client.room = opts[roomNo]
 			fmt.Println("client: " + packet.client.conn.RemoteAddr().String()[6:] + " added to room " + strconv.Itoa(roomNo))
 			connectedClients[(packet.client)] = true
 		case Leave:
-			dropClient((packet.client))
+			dropClient(packet.client, packet.client.room)
 		case Message:
 			for client := range rooms[packet.client.room] {
-				if !packet.client.equals(client) && client.room == packet.client.room {
+				if !packet.client.equals(client) || bytes.Equal(packet.msg, []byte("ping")) {
 					select {
 					case client.send <- packet.msg:
 						continue
 					default:
-						dropClient(client)
+						dropClient(client, packet.client.room)
 					}
 				}
 			}
